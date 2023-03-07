@@ -10,7 +10,7 @@ import sys
 
 import gradio as gr
 
-from modules import ui
+from modules import ui, shared
 from modules.api.models import *
 from modules.api import api
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img
@@ -20,8 +20,10 @@ import modules.scripts as scripts
 from scripts import external_code
 from scripts.processor import *
 
+
 def to_base64_nparray(encoding: str):
     return np.array(api.decode_base64_to_image(encoding)).astype('uint8')
+
 
 def encode_to_base64(image):
     if type(image) is str:
@@ -33,9 +35,11 @@ def encode_to_base64(image):
     else:
         return ""
 
+
 def encode_np_to_base64(image):
     pil = Image.fromarray(image)
     return api.encode_pil_to_base64(pil)
+
 
 cn_root_field_prefix = 'controlnet_'
 cn_fields = {
@@ -55,6 +59,7 @@ cn_fields = {
     "guessmode": (bool, Field(default=True, title="Guess Mode")),
 }
 
+
 def get_deprecated_cn_field(field_name: str, field):
     field_type, field = field
     field = copy.copy(field)
@@ -64,12 +69,16 @@ def get_deprecated_cn_field(field_name: str, field):
         field_type = List[field_type]
     return f'{cn_root_field_prefix}{field_name}', (field_type, field)
 
+
 def get_deprecated_field_default(field_name: str):
     if field_name in ('input_image', 'mask'):
         return []
     return cn_fields[field_name][-1].default
 
-ControlNetUnitRequest = pydantic.create_model('ControlNetUnitRequest', **cn_fields)
+
+ControlNetUnitRequest = pydantic.create_model(
+    'ControlNetUnitRequest', **cn_fields)
+
 
 def create_controlnet_request_model(p_api_class):
     class RequestModel(p_api_class):
@@ -95,14 +104,24 @@ def create_controlnet_request_model(p_api_class):
         __base__=RequestModel,
         **additional_fields)
 
-ControlNetTxt2ImgRequest = create_controlnet_request_model(StableDiffusionTxt2ImgProcessingAPI)
-ControlNetImg2ImgRequest = create_controlnet_request_model(StableDiffusionImg2ImgProcessingAPI)
+
+ControlNetTxt2ImgRequest = create_controlnet_request_model(
+    StableDiffusionTxt2ImgProcessingAPI)
+ControlNetImg2ImgRequest = create_controlnet_request_model(
+    StableDiffusionImg2ImgProcessingAPI)
+
+
+class ListModelsParam(pydantic.BaseModel):
+    module: str
+
 
 class ApiHijack(api.Api):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.add_api_route("/controlnet/txt2img", self.controlnet_txt2img, methods=["POST"], response_model=TextToImageResponse)
-        self.add_api_route("/controlnet/img2img", self.controlnet_img2img, methods=["POST"], response_model=ImageToImageResponse)
+        self.add_api_route("/controlnet/txt2img", self.controlnet_txt2img,
+                           methods=["POST"], response_model=TextToImageResponse)
+        self.add_api_route("/controlnet/img2img", self.controlnet_img2img,
+                           methods=["POST"], response_model=ImageToImageResponse)
 
     def controlnet_txt2img(self, txt2img_request: ControlNetTxt2ImgRequest):
         return self.controlnet_any2img(
@@ -124,7 +143,8 @@ class ApiHijack(api.Api):
 
     def controlnet_any2img(self, any2img_request, original_callback, p_class, script_runner, is_img2img):
         any2img_request = nest_deprecated_cn_fields(any2img_request)
-        script_runner = create_cn_script_runner(script_runner, any2img_request.controlnet_units, is_img2img)
+        script_runner = create_cn_script_runner(
+            script_runner, any2img_request.controlnet_units, is_img2img)
         delattr(any2img_request, 'controlnet_units')
         with self.queue_lock:
             self_copy = copy.copy(self)
@@ -132,7 +152,41 @@ class ApiHijack(api.Api):
             with OverrideInit(p_class, scripts=script_runner):
                 return original_callback(self_copy, any2img_request)
 
+
+def controlnet_any2img(any2img_request, original_callback, p_class, script_runner, is_img2img):
+    any2img_request = nest_deprecated_cn_fields(any2img_request)
+    script_runner = create_cn_script_runner(
+        script_runner, any2img_request.controlnet_units)
+    delattr(any2img_request, 'controlnet_units')
+    with shared.api.queue_lock:
+        self_copy = copy.copy(shared.api)
+        self_copy.queue_lock = contextlib.nullcontext()
+        with OverrideInit(p_class, scripts=script_runner):
+            return original_callback(self_copy, any2img_request)
+
+
+def controlnet_txt2img(txt2img_request: ControlNetTxt2ImgRequest):
+    return controlnet_any2img(
+        any2img_request=txt2img_request,
+        original_callback=ApiHijack.text2imgapi,
+        p_class=StableDiffusionProcessingTxt2Img,
+        script_runner=scripts.scripts_txt2img,
+        is_img2img=False,
+    )
+
+
+def controlnet_img2img(img2img_request: ControlNetImg2ImgRequest):
+    return controlnet_any2img(
+        any2img_request=img2img_request,
+        original_callback=ApiHijack.img2imgapi,
+        p_class=StableDiffusionProcessingImg2Img,
+        script_runner=scripts.scripts_img2img,
+        is_img2img=True,
+    )
+
+
 api.Api = ApiHijack
+
 
 class OverrideInit:
     def __init__(self, cls, **kwargs):
@@ -152,6 +206,7 @@ class OverrideInit:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cls.__init__ = self.original_init
 
+
 def nest_deprecated_cn_fields(any2img_request):
     deprecated_cn_fields = {k: v for k, v in vars(any2img_request).items()
                             if k.startswith(cn_root_field_prefix) and k != 'controlnet_units'}
@@ -164,7 +219,8 @@ def nest_deprecated_cn_fields(any2img_request):
         return any2img_request
 
     warn_deprecated_cn_params()
-    deprecated_cn_fields = {k[len(cn_root_field_prefix):]: v for k, v in deprecated_cn_fields.items()}
+    deprecated_cn_fields = {
+        k[len(cn_root_field_prefix):]: v for k, v in deprecated_cn_fields.items()}
     for k, v in deprecated_cn_fields.items():
         if v is None:
             deprecated_cn_fields[k] = get_deprecated_field_default(k)
@@ -172,8 +228,10 @@ def nest_deprecated_cn_fields(any2img_request):
     for k in ('input_image', 'mask'):
         deprecated_cn_fields[k] = deprecated_cn_fields[k][0] if deprecated_cn_fields[k] else ""
 
-    any2img_request.controlnet_units.insert(0, ControlNetUnitRequest(**deprecated_cn_fields))
+    any2img_request.controlnet_units.insert(
+        0, ControlNetUnitRequest(**deprecated_cn_fields))
     return any2img_request
+
 
 def create_cn_script_runner(script_runner: scripts.ScriptRunner, control_unit_requests: List[ControlNetUnitRequest], is_img2img: bool):
     if not script_runner.scripts:
@@ -184,7 +242,8 @@ def create_cn_script_runner(script_runner: scripts.ScriptRunner, control_unit_re
     cn_script_runner = copy.copy(script_runner)
     cn_script_runner.alwayson_scripts = [cn_script]
     cn_script_args = [None] * cn_script.args_from
-    cn_units = [to_api_cn_unit(control_unit_request) for control_unit_request in control_unit_requests]
+    cn_units = [to_api_cn_unit(control_unit_request)
+                for control_unit_request in control_unit_requests]
     external_code.update_cn_script_in_place(
         script_runner=cn_script_runner,
         script_args=cn_script_args,
@@ -212,8 +271,10 @@ def create_cn_script_runner(script_runner: scripts.ScriptRunner, control_unit_re
 
     return cn_script_runner
 
+
 def to_api_cn_unit(unit_request: ControlNetUnitRequest) -> external_code.ControlNetUnit:
-    input_image = to_base64_nparray(unit_request.input_image) if unit_request.input_image else None
+    input_image = to_base64_nparray(
+        unit_request.input_image) if unit_request.input_image else None
     mask = to_base64_nparray(unit_request.mask) if unit_request.mask else None
     if input_image is not None and mask is not None:
         input_image = (input_image, mask)
@@ -236,10 +297,12 @@ def to_api_cn_unit(unit_request: ControlNetUnitRequest) -> external_code.Control
         guess_mode=unit_request.guessmode,
     )
 
+
 def warn_deprecated_cn_params():
     warning_prefix = '[ControlNet] warning: '
     print(f"{warning_prefix}using deprecated '{cn_root_field_prefix}*' request params", file=sys.stderr)
     print(f"{warning_prefix}consider using the 'control_units' request param instead", file=sys.stderr)
+
 
 def controlnet_api(_: gr.Blocks, app: FastAPI):
     @app.get("/controlnet/model_list")
@@ -248,24 +311,52 @@ def controlnet_api(_: gr.Blocks, app: FastAPI):
         print(up_to_date_model_list)
         return {"model_list": up_to_date_model_list}
 
+    @app.post("/controlnet/list_models")
+    async def list_models(param: ListModelsParam):
+
+        available_modules = [
+            "canny",
+            "depth",
+            "depth_leres",
+            "fake_scribble",
+            "hed",
+            "mlsd",
+            "normal_map",
+            "openpose",
+            "segmentation",
+            "binary",
+            "color"
+        ]
+        up_to_date_model_list = external_code.get_models(update=True)
+        if param.module and param.module not in available_modules:
+            return {"ret": -1, "msg": "Invalid module %s." % (param.module,), "models": []}
+        models = up_to_date_model_list
+        if param.module:
+            models = [m for m in models if param.module in m]
+        return {"ret": 0, "msg": "", "models": models}
+
     @app.post("/controlnet/detect")
     async def detect(
         controlnet_module: str = Body("None", title='Controlnet Module'),
-        controlnet_input_images: List[str] = Body([], title='Controlnet Input Images'),
-        controlnet_processor_res: int = Body(512, title='Controlnet Processor Resolution'),
-        controlnet_threshold_a: float = Body(64, title='Controlnet Threshold a'),
-        controlnet_threshold_b: float = Body(64, title='Controlnet Threshold b')
+        controlnet_input_images: List[str] = Body(
+            [], title='Controlnet Input Images'),
+        controlnet_processor_res: int = Body(
+            512, title='Controlnet Processor Resolution'),
+        controlnet_threshold_a: float = Body(
+            64, title='Controlnet Threshold a'),
+        controlnet_threshold_b: float = Body(
+            64, title='Controlnet Threshold b')
     ):
 
         available_modules = [
-            "canny", 
-            "depth", 
-            "depth_leres", 
-            "fake_scribble", 
-            "hed", 
-            "mlsd", 
-            "normal_map", 
-            "openpose", 
+            "canny",
+            "depth",
+            "depth_leres",
+            "fake_scribble",
+            "hed",
+            "mlsd",
+            "normal_map",
+            "openpose",
             "segmentation",
             "binary",
             "color"
@@ -275,8 +366,9 @@ def controlnet_api(_: gr.Blocks, app: FastAPI):
             return {"images": [], "info": "Module not available"}
         if len(controlnet_input_images) == 0:
             return {"images": [], "info": "No image selected"}
-        
-        print(f"Detecting {str(len(controlnet_input_images))} images with the {controlnet_module} module.")
+
+        print(
+            f"Detecting {str(len(controlnet_input_images))} images with the {controlnet_module} module.")
 
         results = []
 
@@ -284,25 +376,32 @@ def controlnet_api(_: gr.Blocks, app: FastAPI):
             img = to_base64_nparray(input_image)
 
             if controlnet_module == "canny":
-                results.append(canny(img, controlnet_processor_res, controlnet_threshold_a, controlnet_threshold_b)[0])
+                results.append(canny(img, controlnet_processor_res,
+                               controlnet_threshold_a, controlnet_threshold_b)[0])
             elif controlnet_module == "hed":
                 results.append(hed(img, controlnet_processor_res)[0])
             elif controlnet_module == "mlsd":
-                results.append(mlsd(img, controlnet_processor_res, controlnet_threshold_a, controlnet_threshold_b)[0])
+                results.append(mlsd(img, controlnet_processor_res,
+                               controlnet_threshold_a, controlnet_threshold_b)[0])
             elif controlnet_module == "depth":
-                results.append(midas(img, controlnet_processor_res, np.pi * 2.0)[0])
+                results.append(
+                    midas(img, controlnet_processor_res, np.pi * 2.0)[0])
             elif controlnet_module == "normal_map":
-                results.append(midas_normal(img, controlnet_processor_res, np.pi * 2.0, controlnet_threshold_a)[0])
+                results.append(midas_normal(
+                    img, controlnet_processor_res, np.pi * 2.0, controlnet_threshold_a)[0])
             elif controlnet_module == "depth_leres":
-                results.append(leres(img, controlnet_processor_res, np.pi * 2.0, controlnet_threshold_a, controlnet_threshold_b)[0])
+                results.append(leres(img, controlnet_processor_res, np.pi *
+                               2.0, controlnet_threshold_a, controlnet_threshold_b)[0])
             elif controlnet_module == "openpose":
-                results.append(openpose(img, controlnet_processor_res, False)[0])
+                results.append(
+                    openpose(img, controlnet_processor_res, False)[0])
             elif controlnet_module == "fake_scribble":
                 results.append(fake_scribble(img, controlnet_processor_res)[0])
             elif controlnet_module == "segmentation":
                 results.append(uniformer(img, controlnet_processor_res)[0])
             elif controlnet_module == "binary":
-                results.append(binary(img, controlnet_processor_res, controlnet_threshold_a)[0])
+                results.append(
+                    binary(img, controlnet_processor_res, controlnet_threshold_a)[0])
             elif controlnet_module == "color":
                 results.append(color(img, controlnet_processor_res)[0])
 
@@ -321,6 +420,7 @@ def controlnet_api(_: gr.Blocks, app: FastAPI):
 
         results64 = list(map(encode_to_base64, results))
         return {"images": results64, "info": "Success"}
+
 
 try:
     import modules.script_callbacks as script_callbacks
