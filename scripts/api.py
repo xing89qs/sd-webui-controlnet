@@ -156,7 +156,7 @@ class ApiHijack(api.Api):
 def controlnet_any2img(any2img_request, original_callback, p_class, script_runner, is_img2img):
     any2img_request = nest_deprecated_cn_fields(any2img_request)
     script_runner = create_cn_script_runner(
-        script_runner, any2img_request.controlnet_units)
+        script_runner, any2img_request.controlnet_units, is_img2img)
     delattr(any2img_request, 'controlnet_units')
     with shared.api.queue_lock:
         self_copy = copy.copy(shared.api)
