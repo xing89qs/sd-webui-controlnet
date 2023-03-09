@@ -1,28 +1,22 @@
-from scripts.processor import *
-from scripts import external_code
-from typing import Union
 
+from typing import Union
 import numpy as np
 from fastapi import FastAPI, Body
 from PIL import Image
 import copy
 import contextlib
 import pydantic
-import sys
-
 import gradio as gr
-
 from modules import ui, shared
 from modules.api.models import *
 from modules.api import api
 from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusionProcessingImg2Img
-
 import modules.scripts as scripts
-
-import sys
-
+import sys  # noqa
 sys.path.append(
-    '/home/webui/stable-diffusion-webui/extensions/sd-webui-controlnet')
+    '/home/webui/stable-diffusion-webui/extensions/sd-webui-controlnet')  # noqa
+from scripts import external_code
+from scripts.processor import *
 
 
 def to_base64_nparray(encoding: str):
