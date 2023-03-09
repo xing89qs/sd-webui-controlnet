@@ -1,3 +1,5 @@
+from scripts.processor import *
+from scripts import external_code
 from typing import Union
 
 import numpy as np
@@ -17,8 +19,10 @@ from modules.processing import StableDiffusionProcessingTxt2Img, StableDiffusion
 
 import modules.scripts as scripts
 
-from scripts import external_code
-from scripts.processor import *
+import sys
+
+sys.path.append(
+    '/home/webui/stable-diffusion-webui/extensions/sd-webui-controlnet')
 
 
 def to_base64_nparray(encoding: str):
