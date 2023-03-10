@@ -236,6 +236,10 @@ def create_cn_script_runner(script_runner: scripts.ScriptRunner, control_unit_re
         script_runner.initialize_scripts(False)
         ui.create_ui()
 
+    if cn_script.args_from is None:
+        cn_script.args_from = 1
+        cn_script.args_to = 18
+
     cn_script = external_code.find_cn_script(script_runner)
     cn_script_runner = copy.copy(script_runner)
     cn_script_runner.alwayson_scripts = [cn_script]
